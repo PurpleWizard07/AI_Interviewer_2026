@@ -107,7 +107,7 @@ export async function callGemini(
       if (res.status === 401 || res.status === 403) {
         return {
           ok: false,
-          error: 'Invalid API key. Please check your VITE_GEMINI_API_KEY in .env',
+          error: message || 'Invalid API key. Check VITE_GEMINI_API_KEY in .env (or Vercel env vars).',
           retryable: false,
         }
       }
