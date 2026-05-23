@@ -1,13 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
 
-// Extend window type for cross-browser SpeechRecognition
-declare global {
-  interface Window {
-    SpeechRecognition: typeof SpeechRecognition
-    webkitSpeechRecognition: typeof SpeechRecognition
-  }
-}
-
 interface STTState {
   transcript: string
   interimTranscript: string
