@@ -5,6 +5,9 @@ interface TranscriptPanelProps {
   messages: Message[]
   interviewerName: string
   isThinking: boolean
+  pendingInterviewerSpeech?: boolean
+  isPreparingVoice?: boolean
+  isInterviewerSpeaking?: boolean
   interimTranscript: string
   liveTranscript: string
   isListening: boolean
@@ -14,6 +17,9 @@ export function TranscriptPanel({
   messages,
   interviewerName,
   isThinking,
+  pendingInterviewerSpeech = false,
+  isPreparingVoice = false,
+  isInterviewerSpeaking = false,
   interimTranscript,
   liveTranscript,
   isListening,
@@ -23,7 +29,7 @@ export function TranscriptPanel({
   // Auto-scroll on new messages or interim text
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, interimTranscript])
+  }, [messages, interimTranscript, pendingInterviewerSpeech, isPreparingVoice])
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
@@ -42,8 +48,35 @@ export function TranscriptPanel({
         />
       ))}
 
+      {/* Voice pending — no text until speech starts */}
+      {pendingInterviewerSpeech && (
+        <div className="flex gap-2 items-end">
+          <div className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] font-semibold text-gray-400 flex-shrink-0">
+            {interviewerName.split(' ').map(n => n[0]).join('')}
+          </div>
+          <div className="bg-gray-800 border border-indigo-500/25 rounded-2xl rounded-bl-sm px-4 py-3 flex flex-col gap-1.5">
+            <div className="flex gap-1.5 items-center">
+              {[0, 1, 2].map(i => (
+                <span
+                  key={i}
+                  className="w-1.5 h-1.5 rounded-full bg-indigo-400/80 animate-bounce inline-block"
+                  style={{ animationDelay: `${i * 0.15}s` }}
+                />
+              ))}
+            </div>
+            <p className="text-[11px] text-gray-500">
+              {isPreparingVoice
+                ? 'Preparing voice…'
+                : isInterviewerSpeaking
+                ? 'Speaking…'
+                : 'About to speak…'}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Thinking dots */}
-      {isThinking && (
+      {isThinking && !pendingInterviewerSpeech && (
         <div className="flex gap-2 items-end">
           <div className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] font-semibold text-gray-400 flex-shrink-0">
             {interviewerName.split(' ').map(n => n[0]).join('')}

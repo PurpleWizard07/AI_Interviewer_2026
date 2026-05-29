@@ -27,10 +27,12 @@ export interface UseInterviewReturn {
   error: string | null
   sessionId: string | null
   interviewStartTime: number | null
+  interviewerMessageCommitted: boolean
 
   // Actions
   startInterview: (session: InterviewSession) => Promise<void>
   submitAnswer: (transcript: string) => Promise<void>
+  commitInterviewerMessage: () => void  // Reveal transcript when speech starts
   setListening: () => void        // Call after TTS finishes speaking — triggers listening state
   forceEnd: () => Promise<void>   // Emergency end or manual end button
   retryLastCall: () => Promise<void>
@@ -48,6 +50,9 @@ export function useInterview(): UseInterviewReturn {
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [interviewStartTime, setInterviewStartTime] = useState<number | null>(null)
+  const [interviewerMessageCommitted, setInterviewerMessageCommitted] = useState(false)
+  const committedMessageRef = useRef<string | null>(null)
+  const currentResponseRef = useRef<InterviewerResponse | null>(null)
 
   // Refs for values we need in async callbacks without stale closures
   const sessionRef = useRef<InterviewSession | null>(null)
@@ -106,6 +111,14 @@ export function useInterview(): UseInterviewReturn {
     historyRef.current = [...historyRef.current, { role, content }]
     return msg
   }, [])
+
+  const commitInterviewerMessage = useCallback(() => {
+    const text = currentResponseRef.current?.message
+    if (!text || committedMessageRef.current === text) return
+    committedMessageRef.current = text
+    addMessage('interviewer', text)
+    setInterviewerMessageCommitted(true)
+  }, [addMessage])
 
   // ── Internal: enforce follow-up cap (re-call if model ignores limit) ─────
   const enforceFollowupCap = useCallback(
@@ -188,8 +201,9 @@ export function useInterview(): UseInterviewReturn {
         wrapUpCompletedRef.current = true
       }
 
-      // Record interviewer message
-      addMessage('interviewer', response.message)
+      committedMessageRef.current = null
+      setInterviewerMessageCommitted(false)
+      currentResponseRef.current = response
       setCurrentResponse(response)
       setQuestionNumber(response.question_number)
       setInterviewState('responding')
@@ -324,6 +338,8 @@ export function useInterview(): UseInterviewReturn {
   const setListening = useCallback(() => {
     if (!currentResponse) return
 
+    commitInterviewerMessage()
+
     if (currentResponse.action === 'end') {
       handleEndOfInterview()
       return
@@ -347,7 +363,7 @@ export function useInterview(): UseInterviewReturn {
       void triggerTimeUpInternal()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentResponse, callAndProcess, triggerWrapUpInternal, triggerTimeUpInternal])
+  }, [currentResponse, callAndProcess, commitInterviewerMessage, triggerWrapUpInternal, triggerTimeUpInternal])
 
   // ── handleEndOfInterview ──────────────────────────────────────────────────
   const handleEndOfInterview = useCallback(async () => {
@@ -387,12 +403,17 @@ export function useInterview(): UseInterviewReturn {
   // ── retryLastCall ─────────────────────────────────────────────────────────
   const retryLastCall = useCallback(async () => {
     if (lastUserMessageRef.current) {
-      // Remove the last interviewer message if it was partial
-      setMessages(prev => prev.filter((_, i) => i < prev.length - 1))
-      historyRef.current = historyRef.current.slice(0, -1)
+      if (interviewerMessageCommitted) {
+        setMessages(prev => prev.filter((_, i) => i < prev.length - 1))
+        historyRef.current = historyRef.current.slice(0, -1)
+      }
+      committedMessageRef.current = null
+      setInterviewerMessageCommitted(false)
+      currentResponseRef.current = null
+      setCurrentResponse(null)
       await callAndProcess(lastUserMessageRef.current)
     }
-  }, [callAndProcess])
+  }, [callAndProcess, interviewerMessageCommitted])
 
   return {
     interviewState,
@@ -402,8 +423,10 @@ export function useInterview(): UseInterviewReturn {
     error,
     sessionId,
     interviewStartTime,
+    interviewerMessageCommitted,
     startInterview,
     submitAnswer,
+    commitInterviewerMessage,
     setListening,
     forceEnd,
     retryLastCall,

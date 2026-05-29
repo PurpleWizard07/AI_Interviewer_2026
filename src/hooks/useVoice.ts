@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { useSTT } from './useSTT'
-import { useTTS, type KokoroVoice } from './useTTS'
+import { useTTS, type KokoroVoice, type SpeakOptions } from './useTTS'
 
 interface UseVoiceOptions {
   /**
@@ -71,11 +71,11 @@ export function useVoice({
    * Blocks mic while speaking, resolves when speech is done.
    */
   const interviewerSpeak = useCallback(
-    (text: string) =>
+    (text: string, options?: SpeakOptions) =>
       runQueued(async () => {
         stt.stop()
         isTTSActiveRef.current = true
-        await tts.speak(text, interviewerVoice)
+        await tts.speak(text, interviewerVoice, options)
         isTTSActiveRef.current = false
       }),
     [runQueued, tts, stt, interviewerVoice],
@@ -121,6 +121,7 @@ export function useVoice({
     isLoaded: tts.isLoaded,
     isLoading: tts.isLoading,
     loadProgress: tts.loadProgress,
+    isGenerating: tts.isGenerating,
     isSpeaking: tts.isSpeaking,
     isListening: stt.isListening,
     transcript: stt.transcript,

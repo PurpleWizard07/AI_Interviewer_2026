@@ -69,8 +69,14 @@ export default function InterviewPage() {
   useEffect(() => {
     if (interview.interviewState !== 'responding' || !interview.currentResponse) return
     async function go() {
-      await voice.interviewerSpeak(interview.currentResponse!.message)
-      interview.setListening()
+      try {
+        await voice.interviewerSpeak(interview.currentResponse!.message, {
+          onSpeechStart: () => interview.commitInterviewerMessage(),
+        })
+      } finally {
+        interview.commitInterviewerMessage()
+        interview.setListening()
+      }
     }
     go()
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,10 +102,14 @@ export default function InterviewPage() {
   const total = session.config.durationMinutes * 60
   const isInitializing = interview.interviewState === 'idle' || (voice.isLoading && interview.messages.length === 0)
   const isThinking = interview.interviewState === 'thinking'
-  const isSpeaking = voice.isSpeaking || interview.interviewState === 'responding'
+  const isPreparingVoice = voice.isGenerating
+  const isSpeaking = voice.isSpeaking
+  const isVoiceActive = isPreparingVoice || isSpeaking
   const isListening = interview.interviewState === 'listening'
   const isScoring = interview.interviewState === 'scoring'
-  const isBusy = isThinking || isSpeaking || isScoring || isInitializing
+  const isBusy = isThinking || isVoiceActive || isScoring || isInitializing
+  const pendingInterviewerSpeech =
+    interview.interviewState === 'responding' && !interview.interviewerMessageCommitted
 
   function handleMicClick() {
     if (voice.isListening) {
@@ -201,8 +211,8 @@ export default function InterviewPage() {
               <InterviewerCard
                 name={persona.name}
                 title={persona.title}
-                isSpeaking={isSpeaking}
-                isThinking={isThinking && !voice.isSpeaking}
+                isSpeaking={isVoiceActive}
+                isThinking={isThinking && !isVoiceActive}
                 isListening={voice.isListening}
               />
             )}
@@ -223,6 +233,9 @@ export default function InterviewPage() {
             messages={interview.messages}
             interviewerName={persona.name}
             isThinking={isThinking}
+            pendingInterviewerSpeech={pendingInterviewerSpeech}
+            isPreparingVoice={isPreparingVoice}
+            isInterviewerSpeaking={isSpeaking}
             interimTranscript={voice.interimTranscript}
             liveTranscript={voice.transcript}
             isListening={voice.isListening}
@@ -253,6 +266,7 @@ export default function InterviewPage() {
                   {/* State label */}
                   <p className={`text-sm font-medium ${
                     voice.isListening ? 'text-red-400' :
+                    isPreparingVoice ? 'text-violet-400' :
                     isSpeaking ? 'text-indigo-400' :
                     isThinking ? 'text-amber-400' :
                     isListening ? 'text-gray-300' :
@@ -260,6 +274,8 @@ export default function InterviewPage() {
                   }`}>
                     {voice.isListening
                       ? 'Listening — pause to submit'
+                      : isPreparingVoice
+                      ? `${persona.name} is preparing to speak…`
                       : isSpeaking
                       ? `${persona.name} is speaking…`
                       : isThinking

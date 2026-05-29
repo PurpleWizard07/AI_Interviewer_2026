@@ -4,13 +4,19 @@ interface TTSState {
   isLoaded: boolean
   isLoading: boolean
   loadProgress: number   // 0-100, for showing download progress bar
-  isSpeaking: boolean
+  isGenerating: boolean  // Kokoro synthesizing audio (not yet audible)
+  isSpeaking: boolean    // Audio actively playing
   error: string | null
+}
+
+export interface SpeakOptions {
+  /** Fired when playback actually starts (after synthesis). */
+  onSpeechStart?: () => void
 }
 
 interface UseTTSReturn extends TTSState {
   load: () => Promise<void>
-  speak: (text: string, voice?: KokoroVoice) => Promise<void>
+  speak: (text: string, voice?: KokoroVoice, options?: SpeakOptions) => Promise<void>
   stop: () => void
 }
 
@@ -56,6 +62,7 @@ export function useTTS(): UseTTSReturn {
     isLoaded: false,
     isLoading: false,
     loadProgress: 0,
+    isGenerating: false,
     isSpeaking: false,
     error: null,
   })
@@ -103,11 +110,11 @@ export function useTTS(): UseTTSReturn {
     }
     sourceRef.current = null
     isSpeakingRef.current = false
-    setState(s => ({ ...s, isSpeaking: false }))
+    setState(s => ({ ...s, isGenerating: false, isSpeaking: false }))
   }, [])
 
   const speak = useCallback(
-    async (text: string, voice: KokoroVoice = 'af_heart'): Promise<void> => {
+    async (text: string, voice: KokoroVoice = 'af_heart', options?: SpeakOptions): Promise<void> => {
       if (!ttsRef.current) {
         console.warn('[useTTS] Model not loaded yet. Call load() first.')
         return
@@ -118,7 +125,7 @@ export function useTTS(): UseTTSReturn {
       stop()
 
       isSpeakingRef.current = true
-      setState(s => ({ ...s, isSpeaking: true, error: null }))
+      setState(s => ({ ...s, isGenerating: true, isSpeaking: false, error: null }))
 
       try {
         // Generate audio — returns { audio: Float32Array, sampling_rate: number }
@@ -126,6 +133,8 @@ export function useTTS(): UseTTSReturn {
 
         // If stop() was called while generating, don't play
         if (!isSpeakingRef.current) return
+
+        setState(s => ({ ...s, isGenerating: false, isSpeaking: true }))
 
         // Create AudioContext lazily (browsers require user gesture first)
         if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
@@ -151,13 +160,13 @@ export function useTTS(): UseTTSReturn {
         source.connect(ctx.destination)
         sourceRef.current = source
 
-        // Resolve the promise when speech finishes
         await new Promise<void>(resolve => {
           source.onended = () => {
             isSpeakingRef.current = false
-            setState(s => ({ ...s, isSpeaking: false }))
+            setState(s => ({ ...s, isGenerating: false, isSpeaking: false }))
             resolve()
           }
+          options?.onSpeechStart?.()
           source.start(0)
         })
       } catch (err) {
@@ -165,6 +174,7 @@ export function useTTS(): UseTTSReturn {
         isSpeakingRef.current = false
         setState(s => ({
           ...s,
+          isGenerating: false,
           isSpeaking: false,
           error: `Speech failed: ${String(err)}`,
         }))
