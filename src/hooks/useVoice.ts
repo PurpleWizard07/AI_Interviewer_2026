@@ -19,22 +19,7 @@ interface UseVoiceOptions {
  * - While TTS is speaking → mic is blocked (no accidental triggering)
  * - While STT is listening → TTS is silenced if somehow active
  * - speak() waits for TTS to finish before resolving
- *
- * Usage in InterviewPage:
- *   const voice = useVoice({ onUserSpeechEnd: handleAnswer })
- *   await voice.load()
- *   await voice.interviewerSpeak("Tell me about yourself")
- *   voice.startListening()   // user speaks, auto-stops on silence
  */
-const THINKING_ACKS = [
-  'Got it.',
-  'Okay.',
-  'Thanks.',
-  'Mm-hmm.',
-  'Right.',
-  'Sure.',
-]
-
 export function useVoice({
   onUserSpeechEnd,
   interviewerVoice = 'af_heart',
@@ -61,15 +46,18 @@ export function useVoice({
 
   const stt = useSTT(handleFinalTranscript)
 
-  /** Load the Kokoro TTS model. Call this once on mount. */
   const load = useCallback(async () => {
     await tts.load()
-  }, [tts])
+    // Warm WASM synthesis so the first real question is faster
+    await tts.prepare('Hello.', interviewerVoice)
+  }, [tts, interviewerVoice])
 
-  /**
-   * Speak as the interviewer.
-   * Blocks mic while speaking, resolves when speech is done.
-   */
+  /** Start synthesizing before speak — overlaps with UI "thinking" time. */
+  const prepareInterviewerSpeech = useCallback(
+    (text: string) => tts.prepare(text, interviewerVoice),
+    [tts, interviewerVoice],
+  )
+
   const interviewerSpeak = useCallback(
     (text: string, options?: SpeakOptions) =>
       runQueued(async () => {
@@ -81,43 +69,23 @@ export function useVoice({
     [runQueued, tts, stt, interviewerVoice],
   )
 
-  /** Short verbal ack while Gemini thinks — queued before the full response. */
-  const playThinkingAck = useCallback(
-    () => {
-      const phrase = THINKING_ACKS[Math.floor(Math.random() * THINKING_ACKS.length)]
-      return runQueued(async () => {
-        isTTSActiveRef.current = true
-        await tts.speak(phrase, interviewerVoice)
-        isTTSActiveRef.current = false
-      })
-    },
-    [runQueued, tts, interviewerVoice],
-  )
-
-  /**
-   * Start listening to the user.
-   * Auto-stops after ~1.5s of silence, fires onUserSpeechEnd callback.
-   */
   const startListening = useCallback(() => {
-    if (isTTSActiveRef.current) return  // Don't listen while speaking
+    if (isTTSActiveRef.current) return
     tts.stop()
     stt.reset()
     stt.start()
   }, [stt, tts])
 
-  /** Stop listening immediately (e.g. user clicked stop) */
   const stopListening = useCallback(() => {
     stt.stop()
   }, [stt])
 
-  /** Interrupt the interviewer speaking */
   const stopSpeaking = useCallback(() => {
     tts.stop()
     isTTSActiveRef.current = false
   }, [tts])
 
   return {
-    // State
     isLoaded: tts.isLoaded,
     isLoading: tts.isLoading,
     loadProgress: tts.loadProgress,
@@ -129,11 +97,9 @@ export function useVoice({
     isSTTSupported: stt.isSupported,
     ttsError: tts.error,
     sttError: stt.error,
-
-    // Actions
     load,
+    prepareInterviewerSpeech,
     interviewerSpeak,
-    playThinkingAck,
     startListening,
     stopListening,
     stopSpeaking,

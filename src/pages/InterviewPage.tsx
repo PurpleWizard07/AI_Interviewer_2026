@@ -16,7 +16,11 @@ export default function InterviewPage() {
   const navigate = useNavigate()
   const session = location.state?.session as InterviewSession | undefined
 
-  const interview = useInterview()
+  const prepareSpeechRef = useRef<(message: string) => void>(() => {})
+
+  const interview = useInterview({
+    onResponseReady: (message) => prepareSpeechRef.current(message),
+  })
   const [elapsed, setElapsed] = useState(0)
   const [textInput, setTextInput] = useState('')
   const [showText, setShowText] = useState(false)
@@ -33,8 +37,11 @@ export default function InterviewPage() {
     onUserSpeechEnd: (transcript) => onAnswerRef.current(transcript),
   })
 
+  prepareSpeechRef.current = (message) => {
+    void voice.prepareInterviewerSpeech(message)
+  }
+
   onAnswerRef.current = (transcript) => {
-    void voice.playThinkingAck()
     void interview.submitAnswer(transcript)
   }
 
@@ -65,12 +72,13 @@ export default function InterviewPage() {
     return () => clearInterval(id)
   }, [interview.interviewStartTime])
 
-  // ── Speak → then listen ──────────────────────────────────────────────────
+  // ── Play prepared speech → then listen ───────────────────────────────────
   useEffect(() => {
     if (interview.interviewState !== 'responding' || !interview.currentResponse) return
+    const message = interview.currentResponse.message
     async function go() {
       try {
-        await voice.interviewerSpeak(interview.currentResponse!.message, {
+        await voice.interviewerSpeak(message, {
           onSpeechStart: () => interview.commitInterviewerMessage(),
         })
       } finally {
@@ -121,7 +129,6 @@ export default function InterviewPage() {
 
   function handleTextSubmit() {
     if (!textInput.trim()) return
-    void voice.playThinkingAck()
     void interview.submitAnswer(textInput.trim())
     setTextInput('')
     setShowText(false)

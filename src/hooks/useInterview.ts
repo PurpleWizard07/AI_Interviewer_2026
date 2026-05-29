@@ -40,9 +40,16 @@ export interface UseInterviewReturn {
   triggerTimeUp: () => Promise<void>  // Called when configured duration elapses
 }
 
+export interface UseInterviewOptions {
+  /** Fires synchronously when Gemini returns — use to start TTS synthesis early. */
+  onResponseReady?: (message: string) => void
+}
+
 // ─── Hook ──────────────────────────────────────────────────────────────────────
 
-export function useInterview(): UseInterviewReturn {
+export function useInterview(options: UseInterviewOptions = {}): UseInterviewReturn {
+  const onResponseReadyRef = useRef(options.onResponseReady)
+  onResponseReadyRef.current = options.onResponseReady
   const [interviewState, setInterviewState] = useState<InterviewState>('idle')
   const [messages, setMessages] = useState<Message[]>([])
   const [currentResponse, setCurrentResponse] = useState<InterviewerResponse | null>(null)
@@ -204,6 +211,7 @@ export function useInterview(): UseInterviewReturn {
       committedMessageRef.current = null
       setInterviewerMessageCommitted(false)
       currentResponseRef.current = response
+      onResponseReadyRef.current?.(response.message)
       setCurrentResponse(response)
       setQuestionNumber(response.question_number)
       setInterviewState('responding')

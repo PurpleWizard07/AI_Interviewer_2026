@@ -14,8 +14,17 @@ export interface SpeakOptions {
   onSpeechStart?: () => void
 }
 
+interface PreparedClip {
+  text: string
+  voice: KokoroVoice
+  audio: Float32Array
+  sampling_rate: number
+}
+
 interface UseTTSReturn extends TTSState {
   load: () => Promise<void>
+  /** Synthesize audio in the background before speak() is called. */
+  prepare: (text: string, voice?: KokoroVoice) => Promise<void>
   speak: (text: string, voice?: KokoroVoice, options?: SpeakOptions) => Promise<void>
   stop: () => void
 }
@@ -44,12 +53,6 @@ export const PERSONA_VOICES: Record<string, KokoroVoice> = {
  * - No API calls, no cost, no rate limits
  * - First load downloads ~85MB model (q8 quantized), cached in browser IndexedDB
  * - Subsequent loads are instant (served from cache)
- *
- * Usage:
- *   const { load, speak, stop, isLoaded, isLoading, loadProgress, isSpeaking } = useTTS()
- *   await load()          // call once at app startup
- *   await speak("Hello")  // speaks and resolves when done
- *   stop()                // interrupts current speech
  */
 export function useTTS(): UseTTSReturn {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -57,6 +60,8 @@ export function useTTS(): UseTTSReturn {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const sourceRef = useRef<AudioBufferSourceNode | null>(null)
   const isSpeakingRef = useRef(false)
+  const preparedRef = useRef<PreparedClip | null>(null)
+  const preparePromiseRef = useRef<{ key: string; promise: Promise<void> } | null>(null)
 
   const [state, setState] = useState<TTSState>({
     isLoaded: false,
@@ -67,22 +72,52 @@ export function useTTS(): UseTTSReturn {
     error: null,
   })
 
+  const clipKey = (text: string, voice: KokoroVoice) => `${voice}::${text.trim()}`
+
+  const playAudioBuffer = useCallback(
+    async (audio: Float32Array, sampling_rate: number, options?: SpeakOptions) => {
+      if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+        audioCtxRef.current = new AudioContext()
+      }
+      const ctx = audioCtxRef.current
+      if (ctx.state === 'suspended') {
+        await ctx.resume()
+      }
+
+      const audioBuffer = ctx.createBuffer(1, audio.length, sampling_rate)
+      audioBuffer.copyToChannel(audio as Float32Array<ArrayBuffer>, 0)
+
+      const source = ctx.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(ctx.destination)
+      sourceRef.current = source
+
+      await new Promise<void>(resolve => {
+        source.onended = () => {
+          isSpeakingRef.current = false
+          setState(s => ({ ...s, isGenerating: false, isSpeaking: false }))
+          resolve()
+        }
+        options?.onSpeechStart?.()
+        source.start(0)
+      })
+    },
+    [],
+  )
+
   const load = useCallback(async () => {
-    // Don't double-load
     if (ttsRef.current !== null || state.isLoading) return
 
     setState(s => ({ ...s, isLoading: true, error: null, loadProgress: 0 }))
 
     try {
-      // Dynamic import so Vite doesn't try to bundle WASM into main chunk
       const { KokoroTTS } = await import('kokoro-js')
 
       const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
-        dtype: 'q8',  // ~85MB — best quality/size tradeoff
-        device: 'wasm', // explicit WASM — required for browser; don't rely on auto-detect
+        dtype: 'q8',
+        device: 'wasm',
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         progress_callback: (info: any) => {
-          // info.status can be 'initiate', 'download', 'progress', 'done'
           if (info.status === 'progress' && info.total > 0) {
             const pct = Math.round((info.loaded / info.total) * 100)
             setState(s => ({ ...s, loadProgress: pct }))
@@ -102,16 +137,66 @@ export function useTTS(): UseTTSReturn {
     }
   }, [state.isLoading])
 
-  const stop = useCallback(() => {
+  const stopPlayback = useCallback(() => {
     try {
       sourceRef.current?.stop()
     } catch {
       // Ignore "already stopped" errors
     }
     sourceRef.current = null
-    isSpeakingRef.current = false
-    setState(s => ({ ...s, isGenerating: false, isSpeaking: false }))
   }, [])
+
+  const stop = useCallback(() => {
+    stopPlayback()
+    isSpeakingRef.current = false
+    preparedRef.current = null
+    preparePromiseRef.current = null
+    setState(s => ({ ...s, isGenerating: false, isSpeaking: false }))
+  }, [stopPlayback])
+
+  const prepare = useCallback(
+    async (text: string, voice: KokoroVoice = 'af_heart'): Promise<void> => {
+      if (!ttsRef.current) return
+      const trimmed = text.trim()
+      if (!trimmed) return
+
+      const key = clipKey(trimmed, voice)
+      if (preparedRef.current && clipKey(preparedRef.current.text, preparedRef.current.voice) === key) {
+        return
+      }
+      if (preparePromiseRef.current?.key === key) {
+        return preparePromiseRef.current.promise
+      }
+
+      const promise = (async () => {
+        setState(s => ({ ...s, isGenerating: true, isSpeaking: false, error: null }))
+        try {
+          const result = await ttsRef.current.generate(trimmed, { voice })
+          preparedRef.current = {
+            text: trimmed,
+            voice,
+            audio: result.audio,
+            sampling_rate: result.sampling_rate,
+          }
+        } catch (err) {
+          console.error('[useTTS] prepare failed:', err)
+          setState(s => ({
+            ...s,
+            error: `Speech failed: ${String(err)}`,
+          }))
+        } finally {
+          setState(s => ({ ...s, isGenerating: false }))
+          if (preparePromiseRef.current?.key === key) {
+            preparePromiseRef.current = null
+          }
+        }
+      })()
+
+      preparePromiseRef.current = { key, promise }
+      return promise
+    },
+    [],
+  )
 
   const speak = useCallback(
     async (text: string, voice: KokoroVoice = 'af_heart', options?: SpeakOptions): Promise<void> => {
@@ -119,56 +204,34 @@ export function useTTS(): UseTTSReturn {
         console.warn('[useTTS] Model not loaded yet. Call load() first.')
         return
       }
-      if (!text.trim()) return
+      const trimmed = text.trim()
+      if (!trimmed) return
 
-      // Stop anything currently playing
-      stop()
+      stopPlayback()
 
       isSpeakingRef.current = true
-      setState(s => ({ ...s, isGenerating: true, isSpeaking: false, error: null }))
+      const key = clipKey(trimmed, voice)
 
       try {
-        // Generate audio — returns { audio: Float32Array, sampling_rate: number }
-        const result = await ttsRef.current.generate(text, { voice })
+        if (preparePromiseRef.current?.key === key) {
+          await preparePromiseRef.current.promise
+        }
 
-        // If stop() was called while generating, don't play
+        const cached = preparedRef.current
+        if (cached && clipKey(cached.text, cached.voice) === key) {
+          preparedRef.current = null
+          setState(s => ({ ...s, isGenerating: false, isSpeaking: true, error: null }))
+          if (!isSpeakingRef.current) return
+          await playAudioBuffer(cached.audio, cached.sampling_rate, options)
+          return
+        }
+
+        setState(s => ({ ...s, isGenerating: true, isSpeaking: false, error: null }))
+        const result = await ttsRef.current.generate(trimmed, { voice })
         if (!isSpeakingRef.current) return
 
         setState(s => ({ ...s, isGenerating: false, isSpeaking: true }))
-
-        // Create AudioContext lazily (browsers require user gesture first)
-        if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-          audioCtxRef.current = new AudioContext()
-        }
-        const ctx = audioCtxRef.current
-
-        // Resume context if suspended (browser autoplay policy)
-        if (ctx.state === 'suspended') {
-          await ctx.resume()
-        }
-
-        // Convert Float32Array to Web Audio API buffer
-        const audioBuffer = ctx.createBuffer(
-          1,                        // mono
-          result.audio.length,
-          result.sampling_rate,
-        )
-        audioBuffer.copyToChannel(result.audio, 0)
-
-        const source = ctx.createBufferSource()
-        source.buffer = audioBuffer
-        source.connect(ctx.destination)
-        sourceRef.current = source
-
-        await new Promise<void>(resolve => {
-          source.onended = () => {
-            isSpeakingRef.current = false
-            setState(s => ({ ...s, isGenerating: false, isSpeaking: false }))
-            resolve()
-          }
-          options?.onSpeechStart?.()
-          source.start(0)
-        })
+        await playAudioBuffer(result.audio, result.sampling_rate, options)
       } catch (err) {
         console.error('[useTTS] speak failed:', err)
         isSpeakingRef.current = false
@@ -180,8 +243,8 @@ export function useTTS(): UseTTSReturn {
         }))
       }
     },
-    [stop],
+    [playAudioBuffer, stopPlayback],
   )
 
-  return { ...state, load, speak, stop }
+  return { ...state, load, prepare, speak, stop }
 }
