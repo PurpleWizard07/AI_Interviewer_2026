@@ -23,13 +23,25 @@ export function InterviewerCard({ name, title, isSpeaking, isThinking, isListeni
   const initials = getInitials(name)
   const colors = INITIALS_COLORS[initials] ?? { bg: '#1e293b', text: '#94a3b8', ring: '#475569' }
 
-  const waveMode = isSpeaking ? 'speaking' : isListening ? 'listening' : 'idle'
-  const waveColor = isSpeaking ? colors.ring : isListening ? '#ef4444' : '#374151'
+  const waveMode = isSpeaking
+    ? 'speaking'
+    : isThinking
+    ? 'thinking'
+    : isListening
+    ? 'listening'
+    : 'idle'
+  const waveColor = isSpeaking
+    ? colors.ring
+    : isThinking
+    ? '#f59e0b'
+    : isListening
+    ? '#ef4444'
+    : '#374151'
 
   const statusText = isSpeaking
     ? 'Speaking…'
     : isThinking
-    ? 'Thinking…'
+    ? 'Considering your answer…'
     : isListening
     ? 'Listening to you'
     : 'Ready'
@@ -47,10 +59,13 @@ export function InterviewerCard({ name, title, isSpeaking, isThinking, isListeni
       {/* Avatar with animated ring */}
       <div className="relative">
         {/* Outer glow ring when speaking */}
-        {isSpeaking && (
+        {(isSpeaking || isThinking) && (
           <div
-            className="absolute inset-0 rounded-full animate-ping opacity-20"
-            style={{ backgroundColor: colors.ring, transform: 'scale(1.15)' }}
+            className={`absolute inset-0 rounded-full animate-ping opacity-20 ${isThinking ? 'animate-pulse' : ''}`}
+            style={{
+              backgroundColor: isThinking ? '#f59e0b' : colors.ring,
+              transform: 'scale(1.15)',
+            }}
           />
         )}
 

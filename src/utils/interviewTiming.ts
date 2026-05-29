@@ -1,6 +1,10 @@
-/** Minutes before session end when the app triggers wrap-up (matches systemPrompt). */
+/** Seconds before session end when the app triggers wrap-up (matches systemPrompt). */
 export function wrapUpThresholdSeconds(durationMinutes: number): number {
   return Math.max(2, Math.floor(durationMinutes * 0.1)) * 60
+}
+
+export function isInWrapUpWindow(remainingSeconds: number, durationMinutes: number): boolean {
+  return remainingSeconds <= wrapUpThresholdSeconds(durationMinutes)
 }
 
 export function formatMmSs(totalSeconds: number): string {

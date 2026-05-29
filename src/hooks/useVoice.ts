@@ -26,13 +26,29 @@ interface UseVoiceOptions {
  *   await voice.interviewerSpeak("Tell me about yourself")
  *   voice.startListening()   // user speaks, auto-stops on silence
  */
+const THINKING_ACKS = [
+  'Got it.',
+  'Okay.',
+  'Thanks.',
+  'Mm-hmm.',
+  'Right.',
+  'Sure.',
+]
+
 export function useVoice({
   onUserSpeechEnd,
   interviewerVoice = 'af_heart',
 }: UseVoiceOptions = {}) {
   const isTTSActiveRef = useRef(false)
+  const speakChainRef = useRef<Promise<void>>(Promise.resolve())
 
   const tts = useTTS()
+
+  const runQueued = useCallback((job: () => Promise<void>) => {
+    const next = speakChainRef.current.then(job).catch(() => {})
+    speakChainRef.current = next
+    return next
+  }, [])
 
   const handleFinalTranscript = useCallback(
     (text: string) => {
@@ -55,15 +71,27 @@ export function useVoice({
    * Blocks mic while speaking, resolves when speech is done.
    */
   const interviewerSpeak = useCallback(
-    async (text: string) => {
-      // Stop mic if somehow running
-      stt.stop()
+    (text: string) =>
+      runQueued(async () => {
+        stt.stop()
+        isTTSActiveRef.current = true
+        await tts.speak(text, interviewerVoice)
+        isTTSActiveRef.current = false
+      }),
+    [runQueued, tts, stt, interviewerVoice],
+  )
 
-      isTTSActiveRef.current = true
-      await tts.speak(text, interviewerVoice)
-      isTTSActiveRef.current = false
+  /** Short verbal ack while Gemini thinks — queued before the full response. */
+  const playThinkingAck = useCallback(
+    () => {
+      const phrase = THINKING_ACKS[Math.floor(Math.random() * THINKING_ACKS.length)]
+      return runQueued(async () => {
+        isTTSActiveRef.current = true
+        await tts.speak(phrase, interviewerVoice)
+        isTTSActiveRef.current = false
+      })
     },
-    [tts, stt, interviewerVoice],
+    [runQueued, tts, interviewerVoice],
   )
 
   /**
@@ -104,6 +132,7 @@ export function useVoice({
     // Actions
     load,
     interviewerSpeak,
+    playThinkingAck,
     startListening,
     stopListening,
     stopSpeaking,

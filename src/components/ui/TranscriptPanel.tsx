@@ -48,14 +48,17 @@ export function TranscriptPanel({
           <div className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] font-semibold text-gray-400 flex-shrink-0">
             {interviewerName.split(' ').map(n => n[0]).join('')}
           </div>
-          <div className="bg-gray-800 rounded-2xl rounded-bl-sm px-4 py-3 flex gap-1.5 items-center">
-            {[0,1,2].map(i => (
-              <span
-                key={i}
-                className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce inline-block"
-                style={{ animationDelay: `${i * 0.15}s` }}
-              />
-            ))}
+          <div className="bg-gray-800 border border-amber-500/20 rounded-2xl rounded-bl-sm px-4 py-3 flex flex-col gap-1.5">
+            <div className="flex gap-1.5 items-center">
+              {[0, 1, 2].map(i => (
+                <span
+                  key={i}
+                  className="w-1.5 h-1.5 rounded-full bg-amber-400/80 animate-bounce inline-block"
+                  style={{ animationDelay: `${i * 0.15}s` }}
+                />
+              ))}
+            </div>
+            <p className="text-[11px] text-gray-500">Considering your answer…</p>
           </div>
         </div>
       )}

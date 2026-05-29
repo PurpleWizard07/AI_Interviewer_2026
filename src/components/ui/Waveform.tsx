@@ -3,8 +3,9 @@ import { useEffect, useRef } from 'react'
 interface WaveformProps {
   /** 'speaking' = animated bars (interviewer talking)
    *  'listening' = pulsing bars (mic on)
+   *  'thinking'  = soft pulse while waiting on AI
    *  'idle'      = flat static bars */
-  mode: 'speaking' | 'listening' | 'idle'
+  mode: 'speaking' | 'listening' | 'thinking' | 'idle'
   barCount?: number
   color?: string
   className?: string
@@ -87,6 +88,9 @@ export function Waveform({ mode, barCount = 28, color, className = '' }: Wavefor
 
         if (mode === 'idle') {
           heightFactor = 0.06
+        } else if (mode === 'thinking') {
+          const t = frame * 0.03
+          heightFactor = Math.sin(t + i * 0.35) * 0.12 + 0.18
         } else if (mode === 'speaking') {
           // Organic animated wave
           const t = frame * 0.04
@@ -120,7 +124,7 @@ export function Waveform({ mode, barCount = 28, color, className = '' }: Wavefor
         ctx.beginPath()
         ctx.roundRect(x, y, barW, barH, barW / 2)
         ctx.fillStyle = barColor
-        ctx.globalAlpha = mode === 'idle' ? 0.3 : 0.85
+        ctx.globalAlpha = mode === 'idle' ? 0.3 : mode === 'thinking' ? 0.55 : 0.85
         ctx.fill()
         ctx.globalAlpha = 1
       }
