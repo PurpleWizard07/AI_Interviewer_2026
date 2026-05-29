@@ -3,6 +3,9 @@ import { buildSystemPrompt } from '../prompts/systemPrompt'
 import { callGemini, scoreInterview, type GeminiTurn, type InterviewerResponse } from '../services/gemini'
 import type { InterviewSession, Message } from '../types'
 import { saveSession } from '../utils'
+import { formatMmSs } from '../utils/interviewTiming'
+
+const MAX_FOLLOWUPS_PER_QUESTION = 2
 
 // ─── State machine ─────────────────────────────────────────────────────────────
 
@@ -30,6 +33,8 @@ export interface UseInterviewReturn {
   setListening: () => void        // Call after TTS finishes speaking — triggers listening state
   forceEnd: () => Promise<void>   // Emergency end or manual end button
   retryLastCall: () => Promise<void>
+  triggerWrapUp: () => Promise<void>  // Called when session enters wrap-up window
+  triggerTimeUp: () => Promise<void>  // Called when configured duration elapses
 }
 
 // ─── Hook ──────────────────────────────────────────────────────────────────────
@@ -47,6 +52,36 @@ export function useInterview(): UseInterviewReturn {
   const systemPromptRef = useRef<string>('')
   const historyRef = useRef<GeminiTurn[]>([])
   const lastUserMessageRef = useRef<string>('')
+  const startTimeRef = useRef<number>(Date.now())
+  const followupCountRef = useRef(0)
+  const wrapUpTriggeredRef = useRef(false)
+  const wrapUpCompletedRef = useRef(false)
+  const pendingWrapUpRef = useRef(false)
+  const pendingTimeUpRef = useRef(false)
+  const timeUpHandledRef = useRef(false)
+
+  const getTiming = useCallback(() => {
+    const durationSec = (sessionRef.current?.config.durationMinutes ?? 30) * 60
+    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000)
+    const remaining = Math.max(durationSec - elapsed, 0)
+    return { elapsed, remaining, durationSec }
+  }, [])
+
+  const buildTurnContext = useCallback((): string => {
+    const { elapsed, remaining } = getTiming()
+    return (
+      `[Clock: ${formatMmSs(elapsed)} elapsed, ${formatMmSs(remaining)} remaining. ` +
+      `Follow-ups on current question: ${followupCountRef.current}/${MAX_FOLLOWUPS_PER_QUESTION}.]`
+    )
+  }, [getTiming])
+
+  const applyFollowupCount = useCallback((response: InterviewerResponse) => {
+    if (response.action === 'ask_followup') {
+      followupCountRef.current += 1
+    } else if (response.action === 'next_question') {
+      followupCountRef.current = 0
+    }
+  }, [])
 
   // ── Internal: add message to state + history ─────────────────────────────
   const addMessage = useCallback((role: 'interviewer' | 'candidate', content: string) => {
@@ -67,17 +102,49 @@ export function useInterview(): UseInterviewReturn {
     return msg
   }, [])
 
+  // ── Internal: enforce follow-up cap (re-call if model ignores limit) ─────
+  const enforceFollowupCap = useCallback(
+    async (response: InterviewerResponse): Promise<InterviewerResponse> => {
+      if (response.action !== 'ask_followup' || followupCountRef.current < MAX_FOLLOWUPS_PER_QUESTION) {
+        return response
+      }
+
+      const forced = await callGemini(
+        systemPromptRef.current,
+        historyRef.current,
+        '[SYSTEM: You have already asked 2 follow-ups on this question. You MUST use action "next_question" and ask a new main interview question. Do not ask another follow-up.]',
+      )
+
+      if (forced.ok) {
+        return forced.response
+      }
+
+      return {
+        ...response,
+        action: 'next_question',
+        followup_count: 0,
+        question_number: response.question_number + 1,
+      }
+    },
+    [],
+  )
+
   // ── Internal: call Gemini and handle the response ────────────────────────
   const callAndProcess = useCallback(
-    async (userMessage: string): Promise<void> => {
+    async (userMessage: string, options?: { skipContext?: boolean }): Promise<void> => {
       setInterviewState('thinking')
       setError(null)
       lastUserMessageRef.current = userMessage
 
+      const messageForGemini =
+        options?.skipContext || userMessage === 'START_INTERVIEW'
+          ? userMessage
+          : `${buildTurnContext()}\n\n${userMessage}`
+
       const result = await callGemini(
         systemPromptRef.current,
         historyRef.current,
-        userMessage,
+        messageForGemini,
       )
 
       if (!result.ok) {
@@ -86,22 +153,20 @@ export function useInterview(): UseInterviewReturn {
         return
       }
 
-      const response = result.response
+      let response = await enforceFollowupCap(result.response)
+      applyFollowupCount(response)
+
+      if (response.action === 'wrap_up') {
+        wrapUpCompletedRef.current = true
+      }
 
       // Record interviewer message
       addMessage('interviewer', response.message)
       setCurrentResponse(response)
       setQuestionNumber(response.question_number)
-
-      // State after Gemini responds: 'responding' — caller (InterviewPage) will
-      // call voice.interviewerSpeak(), then call setListening() when done
-      if (response.action === 'end') {
-        setInterviewState('responding') // Will transition to 'done' after TTS
-      } else {
-        setInterviewState('responding')
-      }
+      setInterviewState('responding')
     },
-    [addMessage],
+    [addMessage, applyFollowupCount, buildTurnContext, enforceFollowupCap],
   )
 
   // ── startInterview ────────────────────────────────────────────────────────
@@ -110,13 +175,20 @@ export function useInterview(): UseInterviewReturn {
       sessionRef.current = session
       systemPromptRef.current = buildSystemPrompt(session.config)
       historyRef.current = []
+      startTimeRef.current = Date.now()
+      followupCountRef.current = 0
+      wrapUpTriggeredRef.current = false
+      wrapUpCompletedRef.current = false
+      pendingWrapUpRef.current = false
+      pendingTimeUpRef.current = false
+      timeUpHandledRef.current = false
       setSessionId(session.id)
       setMessages([])
       setQuestionNumber(1)
       setError(null)
 
       // "START_INTERVIEW" triggers the opening intro + first question
-      await callAndProcess('START_INTERVIEW')
+      await callAndProcess('START_INTERVIEW', { skipContext: true })
     },
     [callAndProcess],
   )
@@ -136,19 +208,95 @@ export function useInterview(): UseInterviewReturn {
     [interviewState, addMessage, callAndProcess],
   )
 
+  const triggerWrapUpInternal = useCallback(async () => {
+    if (wrapUpTriggeredRef.current) return
+    wrapUpTriggeredRef.current = true
+
+    const { remaining } = getTiming()
+    const mins = Math.max(1, Math.ceil(remaining / 60))
+
+    await callAndProcess(
+      `[SYSTEM: Approximately ${mins} minute(s) remain in this session. Wrap up now: use action "wrap_up". Thank the candidate, give a brief genuine impression, and say next steps are TBD. Do not ask new interview questions.]`,
+      { skipContext: true },
+    )
+  }, [callAndProcess, getTiming])
+
+  const triggerWrapUp = useCallback(async () => {
+    if (wrapUpTriggeredRef.current) return
+
+    if (interviewState !== 'listening') {
+      pendingWrapUpRef.current = true
+      return
+    }
+
+    await triggerWrapUpInternal()
+  }, [interviewState, triggerWrapUpInternal])
+
+  const triggerTimeUpInternal = useCallback(async () => {
+    if (timeUpHandledRef.current) return
+    timeUpHandledRef.current = true
+
+    if (!wrapUpTriggeredRef.current) {
+      wrapUpTriggeredRef.current = true
+      await callAndProcess(
+        '[SYSTEM: Time is up. Use action "wrap_up" immediately. Thank the candidate, brief impression, next steps TBD. No new questions.]',
+        { skipContext: true },
+      )
+      return
+    }
+
+    if (!wrapUpCompletedRef.current) {
+      pendingTimeUpRef.current = true
+      timeUpHandledRef.current = false
+      return
+    }
+
+    await callAndProcess(
+      '[SYSTEM: Time is up. Respond with action "end" now — brief closing only.]',
+      { skipContext: true },
+    )
+  }, [callAndProcess])
+
+  const triggerTimeUp = useCallback(async () => {
+    if (timeUpHandledRef.current) return
+
+    if (interviewState !== 'listening') {
+      pendingTimeUpRef.current = true
+      return
+    }
+
+    await triggerTimeUpInternal()
+  }, [interviewState, triggerTimeUpInternal])
+
   // ── setListening ──────────────────────────────────────────────────────────
   // Called by InterviewPage after TTS finishes speaking the interviewer message
   const setListening = useCallback(() => {
     if (!currentResponse) return
 
     if (currentResponse.action === 'end') {
-      // After speaking the wrap-up, move to scoring
       handleEndOfInterview()
-    } else {
-      setInterviewState('listening')
+      return
+    }
+
+    if (currentResponse.action === 'wrap_up') {
+      void callAndProcess(
+        '[SYSTEM: Wrap-up delivered. Respond with action "end" only — a brief closing sentence. No new questions.]',
+        { skipContext: true },
+      )
+      return
+    }
+
+    setInterviewState('listening')
+
+    if (pendingWrapUpRef.current) {
+      pendingWrapUpRef.current = false
+      void triggerWrapUpInternal()
+    } else if (pendingTimeUpRef.current) {
+      pendingTimeUpRef.current = false
+      void triggerTimeUpInternal()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentResponse])
+  }, [currentResponse, callAndProcess, triggerWrapUpInternal, triggerTimeUpInternal])
 
   // ── handleEndOfInterview ──────────────────────────────────────────────────
   const handleEndOfInterview = useCallback(async () => {
@@ -207,5 +355,7 @@ export function useInterview(): UseInterviewReturn {
     setListening,
     forceEnd,
     retryLastCall,
+    triggerWrapUp,
+    triggerTimeUp,
   }
 }

@@ -4,6 +4,7 @@ import { useInterview } from '../hooks/useInterview'
 import { useVoice } from '../hooks/useVoice'
 import type { InterviewSession } from '../types'
 import { getInterviewerPersona, interviewTypeLabel, difficultyLabel } from '../utils'
+import { wrapUpThresholdSeconds } from '../utils/interviewTiming'
 import { PERSONA_VOICES } from '../hooks/useTTS'
 import type { KokoroVoice } from '../hooks/useTTS'
 import { InterviewerCard } from '../components/ui/InterviewerCard'
@@ -59,6 +60,27 @@ export default function InterviewPage() {
     return () => clearInterval(id)
   }, [])
 
+  // ── Auto wrap-up when time is low / elapsed ─────────────────────────────
+  const total = session ? session.config.durationMinutes * 60 : 0
+  const wrapUpSecs = session ? wrapUpThresholdSeconds(session.config.durationMinutes) : 0
+
+  useEffect(() => {
+    if (!session) return
+    const state = interview.interviewState
+    if (state === 'done' || state === 'scoring' || state === 'idle' || state === 'error') return
+
+    const remaining = total - elapsed
+
+    if (remaining <= wrapUpSecs && remaining > 0) {
+      void interview.triggerWrapUp()
+    }
+
+    if (remaining <= 0) {
+      void interview.triggerTimeUp()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elapsed, interview.interviewState, session, total, wrapUpSecs])
+
   // ── Speak → then listen ──────────────────────────────────────────────────
   useEffect(() => {
     if (interview.interviewState !== 'responding' || !interview.currentResponse) return
@@ -87,7 +109,6 @@ export default function InterviewPage() {
 
   if (!session || !persona) return null
 
-  const total = session.config.durationMinutes * 60
   const isInitializing = interview.interviewState === 'idle' || (voice.isLoading && interview.messages.length === 0)
   const isThinking = interview.interviewState === 'thinking'
   const isSpeaking = voice.isSpeaking || interview.interviewState === 'responding'

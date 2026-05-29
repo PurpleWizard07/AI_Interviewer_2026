@@ -102,6 +102,9 @@ ${TYPE_INSTRUCTIONS[config.interviewType]}
 
 ${DIFFICULTY_INSTRUCTIONS[config.difficulty]}
 
+## SESSION CLOCK
+Each candidate message is prefixed with elapsed time, time remaining, and follow-ups used on the current question (max 2). Use this to pace the interview and trigger wrap-up on time.
+
 ## FOLLOW-UP DECISION RULES (apply to every answer)
 Score each answer mentally on:
 1. Specificity — concrete example vs vague generality
