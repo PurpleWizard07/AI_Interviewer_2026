@@ -10,6 +10,7 @@ import { InterviewerCard } from '../components/ui/InterviewerCard'
 import { MicButton } from '../components/ui/MicButton'
 import { TranscriptPanel } from '../components/ui/TranscriptPanel'
 import { TimerRing } from '../components/ui/TimerRing'
+import { STT_SILENCE_SUBMIT_MS } from '../hooks/useSTT'
 
 export default function InterviewPage() {
   const location = useLocation()
@@ -90,10 +91,12 @@ export default function InterviewPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interview.interviewState, interview.currentResponse?.message])
 
-  // ── Auto-start mic when state = listening ────────────────────────────────
+  // ── Mic only while candidate's turn ─────────────────────────────────────
   useEffect(() => {
     if (interview.interviewState === 'listening') {
       voice.startListening()
+    } else {
+      voice.stopListening()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interview.interviewState])
@@ -110,6 +113,9 @@ export default function InterviewPage() {
   const total = session.config.durationMinutes * 60
   const isInitializing = interview.interviewState === 'idle' || (voice.isLoading && interview.messages.length === 0)
   const isThinking = interview.interviewState === 'thinking'
+  const isConsideringAnswer =
+    isThinking && interview.messages.at(-1)?.role === 'candidate'
+  const silenceSubmitSec = Math.round(STT_SILENCE_SUBMIT_MS / 1000)
   const isPreparingVoice = voice.isGenerating
   const isSpeaking = voice.isSpeaking
   const isVoiceActive = isPreparingVoice || isSpeaking
@@ -220,6 +226,7 @@ export default function InterviewPage() {
                 title={persona.title}
                 isSpeaking={isVoiceActive}
                 isThinking={isThinking && !isVoiceActive}
+                isConsideringAnswer={isConsideringAnswer}
                 isListening={voice.isListening}
               />
             )}
@@ -240,6 +247,7 @@ export default function InterviewPage() {
             messages={interview.messages}
             interviewerName={persona.name}
             isThinking={isThinking}
+            isConsideringAnswer={isConsideringAnswer}
             pendingInterviewerSpeech={pendingInterviewerSpeech}
             isPreparingVoice={isPreparingVoice}
             isInterviewerSpeaking={isSpeaking}
@@ -280,13 +288,15 @@ export default function InterviewPage() {
                     'text-gray-600'
                   }`}>
                     {voice.isListening
-                      ? 'Listening — pause to submit'
+                      ? 'Listening — tap mic when done'
                       : isPreparingVoice
                       ? `${persona.name} is preparing to speak…`
                       : isSpeaking
                       ? `${persona.name} is speaking…`
                       : isThinking
-                      ? `${persona.name} is considering your answer…`
+                      ? isConsideringAnswer
+                        ? `${persona.name} is considering your answer…`
+                        : `${persona.name} is preparing the next question…`
                       : isListening
                       ? 'Your turn — tap mic to speak'
                       : isInitializing
@@ -297,7 +307,7 @@ export default function InterviewPage() {
                     {isListening && !voice.isListening
                       ? 'Or type your answer below'
                       : voice.isListening
-                      ? 'Auto-submits after silence'
+                      ? `Auto-submits after ~${silenceSubmitSec}s of silence, or tap mic`
                       : `Q${interview.questionNumber} · ${session.config.durationMinutes} min session`}
                   </p>
                 </div>

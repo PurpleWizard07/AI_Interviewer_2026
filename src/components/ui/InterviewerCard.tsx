@@ -5,6 +5,8 @@ interface InterviewerCardProps {
   title: string
   isSpeaking: boolean
   isThinking: boolean
+  /** When true with isThinking, label reflects processing the candidate's answer. */
+  isConsideringAnswer?: boolean
   isListening: boolean
 }
 
@@ -19,7 +21,14 @@ function getInitials(name: string) {
   return name.split(' ').map(n => n[0]).join('')
 }
 
-export function InterviewerCard({ name, title, isSpeaking, isThinking, isListening }: InterviewerCardProps) {
+export function InterviewerCard({
+  name,
+  title,
+  isSpeaking,
+  isThinking,
+  isConsideringAnswer = false,
+  isListening,
+}: InterviewerCardProps) {
   const initials = getInitials(name)
   const colors = INITIALS_COLORS[initials] ?? { bg: '#1e293b', text: '#94a3b8', ring: '#475569' }
 
@@ -41,7 +50,9 @@ export function InterviewerCard({ name, title, isSpeaking, isThinking, isListeni
   const statusText = isSpeaking
     ? 'Speaking…'
     : isThinking
-    ? 'Considering your answer…'
+    ? isConsideringAnswer
+      ? 'Considering your answer…'
+      : 'Preparing next question…'
     : isListening
     ? 'Listening to you'
     : 'Ready'

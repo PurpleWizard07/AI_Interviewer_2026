@@ -5,6 +5,8 @@ interface TranscriptPanelProps {
   messages: Message[]
   interviewerName: string
   isThinking: boolean
+  /** When true, show "Considering your answer"; otherwise a preparing label. */
+  isConsideringAnswer?: boolean
   pendingInterviewerSpeech?: boolean
   isPreparingVoice?: boolean
   isInterviewerSpeaking?: boolean
@@ -17,6 +19,7 @@ export function TranscriptPanel({
   messages,
   interviewerName,
   isThinking,
+  isConsideringAnswer = false,
   pendingInterviewerSpeech = false,
   isPreparingVoice = false,
   isInterviewerSpeaking = false,
@@ -91,7 +94,9 @@ export function TranscriptPanel({
                 />
               ))}
             </div>
-            <p className="text-[11px] text-gray-500">Considering your answer…</p>
+            <p className="text-[11px] text-gray-500">
+              {isConsideringAnswer ? 'Considering your answer…' : 'Preparing next question…'}
+            </p>
           </div>
         </div>
       )}

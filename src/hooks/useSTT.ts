@@ -1,5 +1,8 @@
 import { useCallback, useRef, useState } from 'react'
 
+/** How long to wait after the last heard speech before auto-submitting. */
+export const STT_SILENCE_SUBMIT_MS = 4000
+
 interface STTState {
   transcript: string
   interimTranscript: string
@@ -18,16 +21,20 @@ interface UseSTTReturn extends STTState {
  * useSTT — Speech to Text via Web Speech API
  *
  * How it works:
- * - Starts mic when you call start()
- * - Web Speech API handles silence detection automatically (stops after ~1.5s of silence)
- * - Fires onFinalTranscript callback with the full recognized text
- * - interimTranscript shows live "in progress" words while speaking
+ * - Continuous recognition so brief pauses do not end the session
+ * - Auto-submits only after STT_SILENCE_SUBMIT_MS without new speech
+ * - Tap stop (or parent stop()) to submit immediately
+ * - interimTranscript shows live words while speaking
  */
 export function useSTT(onFinalTranscript?: (text: string) => void): UseSTTReturn {
   const recognitionRef = useRef<SpeechRecognition | null>(null)
-  // Use a ref for the callback to always have the latest version without re-creating handlers
   const callbackRef = useRef(onFinalTranscript)
   callbackRef.current = onFinalTranscript
+
+  const shouldListenRef = useRef(false)
+  const isRestartRef = useRef(false)
+  const transcriptRef = useRef('')
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [state, setState] = useState<STTState>({
     transcript: '',
@@ -39,29 +46,58 @@ export function useSTT(onFinalTranscript?: (text: string) => void): UseSTTReturn
     error: null,
   })
 
-  const start = useCallback(() => {
+  const clearSilenceTimer = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+  }, [])
+
+  const finishSession = useCallback(() => {
+    shouldListenRef.current = false
+    clearSilenceTimer()
+    recognitionRef.current?.stop()
+  }, [clearSilenceTimer])
+
+  const scheduleSilenceSubmit = useCallback(() => {
+    clearSilenceTimer()
+    if (!shouldListenRef.current) return
+
+    silenceTimerRef.current = setTimeout(() => {
+      if (shouldListenRef.current) {
+        finishSession()
+      }
+    }, STT_SILENCE_SUBMIT_MS)
+  }, [clearSilenceTimer, finishSession])
+
+  const startRecognition = useCallback(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SR) return
 
-    // Stop any existing session cleanly
     if (recognitionRef.current) {
       recognitionRef.current.abort()
     }
 
     const recognition = new SR()
-    recognition.continuous = false      // Auto-stops after silence — perfect for interview answers
-    recognition.interimResults = true   // Show words as they're being spoken
+    recognition.continuous = true
+    recognition.interimResults = true
     recognition.lang = 'en-US'
     recognition.maxAlternatives = 1
 
     recognition.onstart = () => {
-      setState(s => ({
-        ...s,
-        isListening: true,
-        error: null,
-        transcript: '',
-        interimTranscript: '',
-      }))
+      setState(s => {
+        const clearText = !isRestartRef.current
+        if (clearText) {
+          transcriptRef.current = ''
+        }
+        isRestartRef.current = false
+        return {
+          ...s,
+          isListening: true,
+          error: null,
+          ...(clearText ? { transcript: '', interimTranscript: '' } : {}),
+        }
+      })
     }
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
@@ -77,45 +113,90 @@ export function useSTT(onFinalTranscript?: (text: string) => void): UseSTTReturn
         }
       }
 
-      setState(s => ({
-        ...s,
-        transcript: s.transcript + finalChunk,
-        interimTranscript: interimChunk,
-      }))
-    }
+      if (finalChunk || interimChunk) {
+        scheduleSilenceSubmit()
+      }
 
-    recognition.onend = () => {
-      // Use functional update to get latest transcript value
       setState(s => {
-        const finalText = s.transcript.trim()
-        if (finalText && callbackRef.current) {
-          callbackRef.current(finalText)
+        const nextTranscript = s.transcript + finalChunk
+        transcriptRef.current = nextTranscript
+        return {
+          ...s,
+          transcript: nextTranscript,
+          interimTranscript: interimChunk,
         }
-        return { ...s, isListening: false, interimTranscript: '' }
       })
     }
 
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      // 'no-speech' is normal (user didn't say anything) — not a real error
-      const ignoredErrors = ['no-speech', 'aborted']
+    recognition.onend = () => {
+      if (shouldListenRef.current) {
+        isRestartRef.current = true
+        try {
+          recognition.start()
+        } catch {
+          startRecognition()
+        }
+        return
+      }
+
+      clearSilenceTimer()
+      const finalText = transcriptRef.current.trim()
+      transcriptRef.current = ''
       setState(s => ({
         ...s,
         isListening: false,
-        error: ignoredErrors.includes(event.error) ? null : event.error,
+        interimTranscript: '',
+        transcript: '',
+      }))
+
+      if (finalText && callbackRef.current) {
+        callbackRef.current(finalText)
+      }
+    }
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      const ignoredErrors = ['no-speech', 'aborted']
+      if (ignoredErrors.includes(event.error)) {
+        if (shouldListenRef.current) {
+          isRestartRef.current = true
+          try {
+            recognition.start()
+          } catch {
+            // Browser ended the session; a fresh instance is started on the next start() call.
+          }
+        }
+        return
+      }
+
+      shouldListenRef.current = false
+      clearSilenceTimer()
+      setState(s => ({
+        ...s,
+        isListening: false,
+        error: event.error,
       }))
     }
 
     recognitionRef.current = recognition
     recognition.start()
-  }, [])
+  }, [clearSilenceTimer, scheduleSilenceSubmit])
+
+  const start = useCallback(() => {
+    shouldListenRef.current = true
+    transcriptRef.current = ''
+    clearSilenceTimer()
+    startRecognition()
+  }, [clearSilenceTimer, startRecognition])
 
   const stop = useCallback(() => {
-    recognitionRef.current?.stop()
-  }, [])
+    finishSession()
+  }, [finishSession])
 
   const reset = useCallback(() => {
+    transcriptRef.current = ''
+    clearSilenceTimer()
     setState(s => ({ ...s, transcript: '', interimTranscript: '', error: null }))
-  }, [])
+  }, [clearSilenceTimer])
 
   return { ...state, start, stop, reset }
 }
